@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -54,7 +54,7 @@ namespace VERILOG_FRONTEND {
 	dict<IdString, AstNode*> *attr_list, default_attr_list;
 	std::stack<dict<IdString, AstNode*> *> attr_list_stack;
 	dict<IdString, AstNode*> *albuf;
-	std::vector<UserTypeMap*> user_type_stack;
+	std::vector<UserTypeMap> user_type_stack;
 	dict<std::string, AstNode*> pkg_user_types;
 	std::vector<AstNode*> ast_stack;
 	struct AstNode *astbuf1, *astbuf2, *astbuf3;
@@ -132,8 +132,8 @@ static void addTypedefNode(std::string *name, AstNode *node)
 	log_assert(node);
 	auto *tnode = new AstNode(AST_TYPEDEF, node);
 	tnode->str = *name;
-	auto user_types = user_type_stack.back();
-	(*user_types)[*name] = tnode;
+	auto &user_types = user_type_stack.back();
+	user_types[*name] = tnode;
 	if (current_ast_mod && current_ast_mod->type == AST_PACKAGE) {
 		// typedef inside a package so we need the qualified name
 		auto qname = current_ast_mod->str + "::" + (*name).substr(1);
@@ -145,8 +145,7 @@ static void addTypedefNode(std::string *name, AstNode *node)
 
 static void enterTypeScope()
 {
-	auto user_types = new UserTypeMap();
-	user_type_stack.push_back(user_types);
+	user_type_stack.push_back(UserTypeMap());
 }
 
 static void exitTypeScope()
@@ -157,17 +156,17 @@ static void exitTypeScope()
 static bool isInLocalScope(const std::string *name)
 {
 	// tests if a name was declared in the current block scope
-	auto user_types = user_type_stack.back();
-	return (user_types->count(*name) > 0);
+	auto &user_types = user_type_stack.back();
+	return (user_types.count(*name) > 0);
 }
 
 static AstNode *getTypeDefinitionNode(std::string type_name)
 {
 	// check current scope then outer scopes for a name
 	for (auto it = user_type_stack.rbegin(); it != user_type_stack.rend(); ++it) {
-		if ((*it)->count(type_name) > 0) {
+		if (it->count(type_name) > 0) {
 			// return the definition nodes from the typedef statement
-			auto typedef_node = (**it)[type_name];
+			auto typedef_node = (*it)[type_name];
 			log_assert(typedef_node->type == AST_TYPEDEF);
 			return typedef_node->children[0];
 		}
@@ -236,6 +235,16 @@ static void rewriteAsMemoryNode(AstNode *node, AstNode *rangeNode)
 	node->children.push_back(rangeNode);
 }
 
+static void checkLabelsMatch(const char *element, const std::string *before, const std::string *after)
+{
+	if (!before && after)
+		frontend_verilog_yyerror("%s missing where end label (%s) was given.",
+			element, after->c_str() + 1);
+	if (before && after && *before != *after)
+		frontend_verilog_yyerror("%s (%s) and end label (%s) don't match.",
+			element, before->c_str() + 1, after->c_str() + 1);
+}
+
 %}
 
 %define api.prefix {frontend_verilog_yy}
@@ -260,6 +269,7 @@ static void rewriteAsMemoryNode(AstNode *node, AstNode *rangeNode)
 	bool boolean;
 	char ch;
 	int integer;
+	YOSYS_NAMESPACE_PREFIX AST::AstNodeType ast_node_type;
 }
 
 %token <string> TOK_STRING TOK_ID TOK_CONSTVAL TOK_REALVAL TOK_PRIMITIVE
@@ -272,7 +282,7 @@ static void rewriteAsMemoryNode(AstNode *node, AstNode *rangeNode)
 %token TOK_PACKAGE TOK_ENDPACKAGE TOK_PACKAGESEP
 %token TOK_INTERFACE TOK_ENDINTERFACE TOK_MODPORT TOK_VAR TOK_WILDCARD_CONNECT
 %token TOK_INPUT TOK_OUTPUT TOK_INOUT TOK_WIRE TOK_WAND TOK_WOR TOK_REG TOK_LOGIC
-%token TOK_INTEGER TOK_SIGNED TOK_ASSIGN TOK_PLUS_ASSIGN TOK_ALWAYS TOK_INITIAL
+%token TOK_INTEGER TOK_SIGNED TOK_ASSIGN TOK_ALWAYS TOK_INITIAL
 %token TOK_ALWAYS_FF TOK_ALWAYS_COMB TOK_ALWAYS_LATCH
 %token TOK_BEGIN TOK_END TOK_IF TOK_ELSE TOK_FOR TOK_WHILE TOK_REPEAT
 %token TOK_DPI_FUNCTION TOK_POSEDGE TOK_NEGEDGE TOK_OR TOK_AUTOMATIC
@@ -286,7 +296,9 @@ static void rewriteAsMemoryNode(AstNode *node, AstNode *rangeNode)
 %token TOK_RAND TOK_CONST TOK_CHECKER TOK_ENDCHECKER TOK_EVENTUALLY
 %token TOK_INCREMENT TOK_DECREMENT TOK_UNIQUE TOK_UNIQUE0 TOK_PRIORITY
 %token TOK_STRUCT TOK_PACKED TOK_UNSIGNED TOK_INT TOK_BYTE TOK_SHORTINT TOK_LONGINT TOK_UNION
-%token TOK_OR_ASSIGN TOK_XOR_ASSIGN TOK_AND_ASSIGN TOK_SUB_ASSIGN
+%token TOK_BIT_OR_ASSIGN TOK_BIT_AND_ASSIGN TOK_BIT_XOR_ASSIGN TOK_ADD_ASSIGN
+%token TOK_SUB_ASSIGN TOK_DIV_ASSIGN TOK_MOD_ASSIGN TOK_MUL_ASSIGN
+%token TOK_SHL_ASSIGN TOK_SHR_ASSIGN TOK_SSHL_ASSIGN TOK_SSHR_ASSIGN
 
 %type <ast> range range_or_multirange non_opt_range non_opt_multirange
 %type <ast> wire_type expr basic_expr concat_list rvalue lvalue lvalue_concat_list non_io_wire_type io_wire_type
@@ -298,6 +310,7 @@ static void rewriteAsMemoryNode(AstNode *node, AstNode *rangeNode)
 %type <integer> integer_atom_type
 %type <al> attr case_attr
 %type <ast> struct_union
+%type <ast_node_type> asgn_binop
 
 %type <specify_target_ptr> specify_target
 %type <specify_triple_ptr> specify_triple specify_opt_triple
@@ -454,7 +467,6 @@ module:
 		port_counter = 0;
 		mod->str = *$4;
 		append_attr(mod, $1);
-		delete $4;
 	} module_para_opt module_args_opt ';' module_body TOK_ENDMODULE opt_label {
 		if (port_stubs.size() != 0)
 			frontend_verilog_yyerror("Missing details for module port `%s'.",
@@ -462,7 +474,10 @@ module:
 		SET_AST_NODE_LOC(ast_stack.back(), @2, @$);
 		ast_stack.pop_back();
 		log_assert(ast_stack.size() == 1);
+		checkLabelsMatch("Module name", $4, $11);
 		current_ast_mod = NULL;
+		delete $4;
+		delete $11;
 		exitTypeScope();
 	};
 
@@ -500,18 +515,19 @@ optional_comma:
 module_arg_opt_assignment:
 	'=' expr {
 		if (ast_stack.back()->children.size() > 0 && ast_stack.back()->children.back()->type == AST_WIRE) {
-			AstNode *wire = new AstNode(AST_IDENTIFIER);
-			wire->str = ast_stack.back()->children.back()->str;
 			if (ast_stack.back()->children.back()->is_input) {
 				AstNode *n = ast_stack.back()->children.back();
 				if (n->attributes.count(ID::defaultvalue))
 					delete n->attributes.at(ID::defaultvalue);
 				n->attributes[ID::defaultvalue] = $2;
-			} else
-			if (ast_stack.back()->children.back()->is_reg || ast_stack.back()->children.back()->is_logic)
-				ast_stack.back()->children.push_back(new AstNode(AST_INITIAL, new AstNode(AST_BLOCK, new AstNode(AST_ASSIGN_LE, wire, $2))));
-			else
-				ast_stack.back()->children.push_back(new AstNode(AST_ASSIGN, wire, $2));
+			} else {
+				AstNode *wire = new AstNode(AST_IDENTIFIER);
+				wire->str = ast_stack.back()->children.back()->str;
+				if (ast_stack.back()->children.back()->is_reg || ast_stack.back()->children.back()->is_logic)
+					ast_stack.back()->children.push_back(new AstNode(AST_INITIAL, new AstNode(AST_BLOCK, new AstNode(AST_ASSIGN_LE, wire, $2))));
+				else
+					ast_stack.back()->children.push_back(new AstNode(AST_ASSIGN, wire, $2));
+			}
 		} else
 			frontend_verilog_yyerror("SystemVerilog interface in module port list cannot have a default value.");
 	} |
@@ -579,7 +595,10 @@ package:
 		append_attr(mod, $1);
 	} ';' package_body TOK_ENDPACKAGE opt_label {
 		ast_stack.pop_back();
+		checkLabelsMatch("Package name", $4, $9);
 		current_ast_mod = NULL;
+		delete $4;
+		delete $9;
 		exitTypeScope();
 	};
 
@@ -587,7 +606,7 @@ package_body:
 	package_body package_body_stmt | %empty;
 
 package_body_stmt:
-	typedef_decl | localparam_decl | param_decl;
+	typedef_decl | localparam_decl | param_decl | task_func_decl;
 
 interface:
 	TOK_INTERFACE {
@@ -686,6 +705,7 @@ wire_type_token:
 		astbuf3->is_custom_type = true;
 		astbuf3->children.push_back(new AstNode(AST_WIRETYPE));
 		astbuf3->children.back()->str = *$1;
+		delete $1;
 	} |
 	TOK_WOR {
 		astbuf3->is_wor = true;
@@ -1153,6 +1173,8 @@ specify_item:
 		cell->children.back()->str = "\\DST";
 
 		delete $1;
+		delete limit;
+		delete limit2;
 	};
 
 specify_opt_triple:
@@ -1450,6 +1472,7 @@ param_type:
 		astbuf1->is_custom_type = true;
 		astbuf1->children.push_back(new AstNode(AST_WIRETYPE));
 		astbuf1->children.back()->str = *$1;
+		delete $1;
 	};
 
 param_decl:
@@ -1688,10 +1711,12 @@ member_type_token:
 			delete astbuf1;
 			astbuf1 = template_node;
 		}
-	| struct_union {
+	| {
+		delete astbuf1;
+	} struct_union {
 			// stash state on ast_stack
 			ast_stack.push_back(astbuf2);
-			astbuf2 = $1;
+			astbuf2 = $2;
 		} struct_body  {
 		        astbuf1 = astbuf2;
 			// recover state
@@ -2076,6 +2101,7 @@ cell_port:
 		if (!sv_mode)
 			frontend_verilog_yyerror("Wildcard port connections are only supported in SystemVerilog mode.");
 		astbuf2->attributes[ID::wildcard_port_conns] = AstNode::mkconst_int(1, false);
+		free_attr($1);
 	};
 
 always_comb_or_latch:
@@ -2447,46 +2473,34 @@ simple_behavioral_stmt:
 		SET_AST_NODE_LOC(node, @2, @5);
 		append_attr(node, $1);
 	} |
-	attr lvalue TOK_XOR_ASSIGN delay expr {
-		AstNode *xor_node = new AstNode(AST_BIT_XOR, $2->clone(), $5);
-		AstNode *node = new AstNode(AST_ASSIGN_EQ, $2, xor_node);
-		SET_AST_NODE_LOC(xor_node, @2, @5);
+	attr lvalue asgn_binop delay expr {
+		AstNode *expr_node = $5;
+		if ($3 == AST_SHIFT_LEFT || $3 == AST_SHIFT_RIGHT ||
+			$3 == AST_SHIFT_SLEFT || $3 == AST_SHIFT_SRIGHT) {
+			expr_node = new AstNode(AST_TO_UNSIGNED, expr_node);
+			SET_AST_NODE_LOC(expr_node, @5, @5);
+		}
+		AstNode *op_node = new AstNode($3, $2->clone(), expr_node);
+		AstNode *node = new AstNode(AST_ASSIGN_EQ, $2, op_node);
+		SET_AST_NODE_LOC(op_node, @2, @5);
 		SET_AST_NODE_LOC(node, @2, @5);
-		ast_stack.back()->children.push_back(node);
-		append_attr(node, $1);
-	} |
-	attr lvalue TOK_OR_ASSIGN delay expr {
-		AstNode *or_node = new AstNode(AST_BIT_OR, $2->clone(), $5);
-		SET_AST_NODE_LOC(or_node, @2, @5);
-		AstNode *node = new AstNode(AST_ASSIGN_EQ, $2, or_node);
-		SET_AST_NODE_LOC(node, @2, @5);
-		ast_stack.back()->children.push_back(node);
-		append_attr(node, $1);
-	} |
-	attr lvalue TOK_PLUS_ASSIGN delay expr {
-		AstNode *add_node = new AstNode(AST_ADD, $2->clone(), $5);
-		AstNode *node = new AstNode(AST_ASSIGN_EQ, $2, add_node);
-		SET_AST_NODE_LOC(node, @2, @5);
-		SET_AST_NODE_LOC(add_node, @2, @5);
-		ast_stack.back()->children.push_back(node);
-		append_attr(node, $1);
-	} |
-	attr lvalue TOK_SUB_ASSIGN delay expr {
-		AstNode *sub_node = new AstNode(AST_SUB, $2->clone(), $5);
-		AstNode *node = new AstNode(AST_ASSIGN_EQ, $2, sub_node);
-		SET_AST_NODE_LOC(node, @2, @5);
-		SET_AST_NODE_LOC(sub_node, @2, @5);
-		ast_stack.back()->children.push_back(node);
-		append_attr(node, $1);
-	} |
-	attr lvalue TOK_AND_ASSIGN delay expr {
-		AstNode *and_node = new AstNode(AST_BIT_AND, $2->clone(), $5);
-		AstNode *node = new AstNode(AST_ASSIGN_EQ, $2, and_node);
-		SET_AST_NODE_LOC(node, @2, @5);
-		SET_AST_NODE_LOC(and_node, @2, @5);
 		ast_stack.back()->children.push_back(node);
 		append_attr(node, $1);
 	};
+
+asgn_binop:
+	TOK_BIT_OR_ASSIGN { $$ = AST_BIT_OR; } |
+	TOK_BIT_AND_ASSIGN { $$ = AST_BIT_AND; } |
+	TOK_BIT_XOR_ASSIGN { $$ = AST_BIT_XOR; } |
+	TOK_ADD_ASSIGN { $$ = AST_ADD; } |
+	TOK_SUB_ASSIGN { $$ = AST_SUB; } |
+	TOK_DIV_ASSIGN { $$ = AST_DIV; } |
+	TOK_MOD_ASSIGN { $$ = AST_MOD; } |
+	TOK_MUL_ASSIGN { $$ = AST_MUL; } |
+	TOK_SHL_ASSIGN { $$ = AST_SHIFT_LEFT; } |
+	TOK_SHR_ASSIGN { $$ = AST_SHIFT_RIGHT; } |
+	TOK_SSHL_ASSIGN { $$ = AST_SHIFT_SLEFT; } |
+	TOK_SSHR_ASSIGN { $$ = AST_SHIFT_SRIGHT; } ;
 
 // this production creates the obligatory if-else shift/reduce conflict
 behavioral_stmt:
@@ -2527,8 +2541,7 @@ behavioral_stmt:
 			node->str = *$4;
 	} behavioral_stmt_list TOK_END opt_label {
 		exitTypeScope();
-		if ($4 != NULL && $8 != NULL && *$4 != *$8)
-			frontend_verilog_yyerror("Begin label (%s) and end label (%s) don't match.", $4->c_str()+1, $8->c_str()+1);
+		checkLabelsMatch("Begin label", $4, $8);
 		AstNode *node = ast_stack.back();
 		// In SystemVerilog, unnamed blocks with block item declarations
 		// create an implicit hierarchy scope
@@ -2864,8 +2877,7 @@ gen_block:
 		ast_stack.push_back(node);
 	} module_gen_body TOK_END opt_label {
 		exitTypeScope();
-		if ($3 != NULL && $7 != NULL && *$3 != *$7)
-			frontend_verilog_yyerror("Begin label (%s) and end label (%s) don't match.", $3->c_str()+1, $7->c_str()+1);
+		checkLabelsMatch("Begin label", $3, $7);
 		delete $3;
 		delete $7;
 		SET_AST_NODE_LOC(ast_stack.back(), @1, @7);

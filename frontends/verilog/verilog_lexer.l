@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -103,7 +103,7 @@ static bool isUserType(std::string &s)
 {
 	// check current scope then outer scopes for a name
 	for (auto it = user_type_stack.rbegin(); it != user_type_stack.rend(); ++it) {
-		if ((*it)->count(s) > 0) {
+		if (it->count(s) > 0) {
 			return true;
 		}
 	}
@@ -544,11 +544,18 @@ import[ \t\r\n]+\"(DPI|DPI-C)\"[ \t\r\n]+function[ \t\r\n]+ {
 
 ".*" { return TOK_WILDCARD_CONNECT; }
 
-"|=" { SV_KEYWORD(TOK_OR_ASSIGN); }
-"&=" { SV_KEYWORD(TOK_AND_ASSIGN); }
-"+=" { SV_KEYWORD(TOK_PLUS_ASSIGN); }
+"|=" { SV_KEYWORD(TOK_BIT_OR_ASSIGN); }
+"&=" { SV_KEYWORD(TOK_BIT_AND_ASSIGN); }
+"+=" { SV_KEYWORD(TOK_ADD_ASSIGN); }
 "-=" { SV_KEYWORD(TOK_SUB_ASSIGN); }
-"^=" { SV_KEYWORD(TOK_XOR_ASSIGN); }
+"^=" { SV_KEYWORD(TOK_BIT_XOR_ASSIGN); }
+"/=" { SV_KEYWORD(TOK_DIV_ASSIGN); }
+"%=" { SV_KEYWORD(TOK_MOD_ASSIGN); }
+"*=" { SV_KEYWORD(TOK_MUL_ASSIGN); }
+"<<=" { SV_KEYWORD(TOK_SHL_ASSIGN); }
+">>=" { SV_KEYWORD(TOK_SHR_ASSIGN); }
+"<<<=" { SV_KEYWORD(TOK_SSHL_ASSIGN); }
+">>>=" { SV_KEYWORD(TOK_SSHR_ASSIGN); }
 
 [-+]?[=*]> {
 	if (!specify_mode) REJECT;
